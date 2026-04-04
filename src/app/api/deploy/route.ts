@@ -12,10 +12,10 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
-    // 1. Forward the request to the Python FastAPI Worker
-    // Note: The Python worker must be running on localhost:8000
-    const pythonWorkerUrl = "http://localhost:8000/api/agent";
+    // Forward the deployment request to the Python FastAPI Worker
+    const pythonWorkerUrl = "http://localhost:8000/api/deploy";
     
+    // We pass the token in the body as authOverride so the worker can use it
     const response = await fetch(pythonWorkerUrl, {
       method: "POST",
       headers: {
@@ -32,16 +32,16 @@ export async function POST(request: NextRequest) {
     if (!response.ok) {
       return NextResponse.json({
         success: false,
-        error: data.detail || data.error || "Python worker failed.",
+        error: data.detail || data.error || "Deployment agent failed.",
       }, { status: response.status });
     }
 
     return NextResponse.json(data);
 
   } catch (error) {
-    console.error("Agent Proxy Error:", error);
+    console.error("Deploy Proxy Error:", error);
     return NextResponse.json({ 
-      error: "The AI Agent worker is currently unreachable. Make sure the Python server is running." 
+      error: "The Deployment Agent worker is currently unreachable. Make sure the Python server is running." 
     }, { status: 500 });
   }
 }

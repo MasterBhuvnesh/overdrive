@@ -10,6 +10,7 @@ export async function GET() {
   }
 
   try {
+    console.log("DEBUG: Fetching repositories for user with token starting with", token.substring(0, 8));
     const response = await fetch("https://api.github.com/user/repos?sort=updated&per_page=50", {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -20,10 +21,12 @@ export async function GET() {
 
     if (!response.ok) {
       const err = await response.json();
+      console.error("DEBUG: GitHub API Error:", response.status, err);
       return NextResponse.json({ error: err.message || "Failed to fetch repositories." }, { status: response.status });
     }
 
     const repos = await response.json();
+    console.log("DEBUG: Successfully fetched repos count:", repos.length);
 
     // Map to a cleaner format for the UI
     const formattedRepos = repos.map((r: any) => ({

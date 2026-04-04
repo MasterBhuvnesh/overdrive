@@ -15,6 +15,8 @@ export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [repos, setRepos] = useState<any[]>([]);
+  const [reposLoading, setReposLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
@@ -26,10 +28,24 @@ export default function DashboardPage() {
         } else {
           setUser(data.user);
           setLoading(false);
+          // Only fetch repos if user is authenticated
+          fetchRepos();
         }
       })
       .catch(() => router.replace("/"));
   }, [router]);
+
+  async function fetchRepos() {
+    try {
+      const res = await fetch("/api/repo/list");
+      const data = await res.json();
+      if (data.repos) setRepos(data.repos);
+    } catch (err) {
+      console.error("Failed to fetch repos:", err);
+    } finally {
+      setReposLoading(false);
+    }
+  }
 
   async function handleLogout() {
     setLoggingOut(true);
@@ -50,19 +66,19 @@ export default function DashboardPage() {
 
   const memberSince = user
     ? new Date(user.createdAt).toLocaleDateString("en-US", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      })
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    })
     : "";
 
   const initials = user
     ? user.name
-        .split(" ")
-        .map((w) => w[0])
-        .slice(0, 2)
-        .join("")
-        .toUpperCase()
+      .split(" ")
+      .map((w) => w[0])
+      .slice(0, 2)
+      .join("")
+      .toUpperCase()
     : "?";
 
   return (
@@ -163,7 +179,7 @@ export default function DashboardPage() {
         <div className="fade-in" style={{ marginBottom: 40 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
             <span className="badge badge-success">
-              <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><circle cx="4" cy="4" r="4"/></svg>
+              <svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor"><circle cx="4" cy="4" r="4" /></svg>
               Authenticated
             </span>
           </div>
@@ -215,7 +231,7 @@ export default function DashboardPage() {
               </div>
             </div>
             <div style={{ borderTop: "1px solid var(--border)", paddingTop: 16 }}>
-              <Row label="User ID" value={user?.id?.slice(0, 8) + "…"} />
+              <Row label="User ID" value={user?.id?.toString().slice(0, 8) + "…"} />
               <Row label="Member since" value={memberSince} />
             </div>
           </div>
@@ -261,6 +277,64 @@ export default function DashboardPage() {
               <Row label="Expires" value="7 days from login" />
             </div>
           </div>
+        </div>
+
+        {/* Repositories section */}
+        <div 
+          className="fade-in fade-in-delay-1"
+          style={{ marginBottom: 32 }}
+        >
+          <p style={{ fontSize: "0.75rem", fontWeight: 600, color: "rgba(240,240,248,0.4)", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 16 }}>
+            Your Repositories ({repos.length})
+          </p>
+          
+          {reposLoading ? (
+             <div style={{ padding: "40px", textAlign: "center", background: "var(--surface)", borderRadius: 16, border: "1px solid var(--border)" }}>
+               <div className="spinner" style={{ margin: "0 auto 12px" }} />
+               <p style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>Fetching your projects from GitHub...</p>
+             </div>
+          ) : repos.length === 0 ? (
+            <div style={{ padding: "40px", textAlign: "center", background: "var(--surface)", borderRadius: 16, border: "1px solid var(--border)" }}>
+              <p style={{ color: "var(--text-muted)", fontSize: "0.875rem" }}>No repositories found.</p>
+            </div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
+              {repos.slice(0, 6).map((repo) => (
+                <div key={repo.id} className="dashboard-card" style={{ padding: "18px 20px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                    <div style={{ overflow: "hidden" }}>
+                      <p style={{ fontWeight: 600, fontSize: "0.9375rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {repo.name}
+                      </p>
+                      <p style={{ color: "var(--text-muted)", fontSize: "0.75rem", marginTop: 2 }}>{repo.full_name}</p>
+                    </div>
+                    {repo.isPrivate && <span style={{ fontSize: "0.625rem", background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: 4, border: "1px solid var(--border)" }}>Private</span>}
+                  </div>
+                  
+                  <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", lineHeight: 1.4, height: 40, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", marginBottom: 16 }}>
+                    {repo.description || "No description provided."}
+                  </p>
+                  
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: "0.7rem", color: "rgba(240,240,248,0.3)" }}>
+                      Updated {new Date(repo.updated_at).toLocaleDateString()}
+                    </span>
+                    <Link 
+                      href={`/heal?repo=${encodeURIComponent(repo.html_url)}`}
+                      style={{ fontSize: "0.75rem", color: "var(--accent-secondary)", textDecoration: "none", fontWeight: 600 }}
+                    >
+                      Fix Repo →
+                    </Link>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {repos.length > 6 && (
+            <div style={{ marginTop: 12, textAlign: "center" }}>
+               <p style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>And {repos.length - 6} more repositories...</p>
+            </div>
+          )}
         </div>
 
         {/* ── Quick Actions row ── */}
@@ -355,7 +429,7 @@ export default function DashboardPage() {
           </p>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
             {[
-              "Next.js 16", "React 19", "TypeScript", "bcryptjs", "jose (JWT)", 
+              "Next.js 16", "React 19", "TypeScript", "bcryptjs", "jose (JWT)",
               "Zod", "App Router", "Route Handlers", "HttpOnly Cookies",
               "Gemini AI", "GitHub REST API", "Docker",
             ].map((tech) => (

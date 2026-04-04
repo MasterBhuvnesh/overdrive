@@ -1,16 +1,18 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-export async function GET() {
-  const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
-  const REDIRECT_URI = process.env.NEXT_PUBLIC_GITHUB_REDIRECT_URI;
+export async function GET(request: NextRequest) {
+  const client_id = process.env.GITHUB_CLIENT_ID;
+  const redirect_uri = process.env.NEXT_PUBLIC_GITHUB_REDIRECT_URI || "http://localhost:3000/api/auth/github/callback";
+  const scope = "repo read:user user:email";
+  const state = Math.random().toString(36).substring(7);
 
-  if (!GITHUB_CLIENT_ID) {
-    return NextResponse.json({ error: "GitHub Client ID is not configured." }, { status: 500 });
-  }
+  const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${client_id}&redirect_uri=${encodeURIComponent(redirect_uri)}&scope=${encodeURIComponent(scope)}&state=${state}`;
 
-  // Scopes: repo (to manage code/PRs), read:user (profile metadata), user:email (to identify user)
-  const scopes = ["repo", "read:user", "user:email"].join(" ");
-  const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI || "")}&scope=${encodeURIComponent(scopes)}&state=${Math.random().toString(36).substring(7)}`;
-
-  return NextResponse.redirect(githubAuthUrl);
+  // Use a standard Response redirect for better browser compatibility
+  return new Response(null, {
+    status: 307,
+    headers: {
+      Location: githubAuthUrl,
+    },
+  });
 }

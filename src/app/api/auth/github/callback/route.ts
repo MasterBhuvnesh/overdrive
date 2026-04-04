@@ -10,7 +10,6 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // 1. Exchange code for access token
     const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
       method: "POST",
       headers: {
@@ -30,9 +29,7 @@ export async function GET(request: NextRequest) {
     }
 
     const accessToken = tokenData.access_token;
-    console.log("DEBUG: Received GitHub Access Token:", accessToken);
 
-    // 2. Fetch user profile
     const userResponse = await fetch("https://api.github.com/user", {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -43,10 +40,8 @@ export async function GET(request: NextRequest) {
     const userData = await userResponse.json();
     const userId = userData.id.toString();
 
-    // 3. Create session with GitHub Token
     await createSession(userId, accessToken);
 
-    // 4. Redirect to dashboard
     return NextResponse.redirect(new URL("/dashboard", request.url));
   } catch (error) {
     console.error("OAuth Callback Error:", error);

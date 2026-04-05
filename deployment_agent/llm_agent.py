@@ -20,10 +20,14 @@ class LLMAgent:
         return "\n".join(parts)
 
     def _clean(self, text: str) -> str:
-        """Strip markdown code fences."""
+        """Strip markdown code fences and other non-YAML/JSON noise."""
         text = text.strip()
-        text = re.sub(r"^```[\w]*\n?", "", text)
-        text = re.sub(r"\n?```$", "", text)
+        # Remove any lines that are just markdown code fences (```)
+        text = re.sub(r"^\s*`{3,}.*$", "", text, flags=re.MULTILINE)
+        # Force-remove "version:" tags which AI stubbornly includes
+        text = re.sub(r"^\s*version:.*$", "", text, flags=re.MULTILINE)
+        # Final cleanup for any stray backticks or empty lines the LLM might have leaked
+        text = text.replace("```", "")
         return text.strip()
 
     async def _generate(self, system: str, user: str) -> str:
@@ -127,7 +131,11 @@ Rules:
 4. HEALTHCHECK directive
 5. Correct ports exposed
 6. Layer caching optimized (deps before source)
-7. Helpful comments throughout"""
+7. CRITICAL: Examine the 'Repository structure' and 'Service Path' below VERY carefully. 
+8. CRITICAL: The application is located at: {svc.get('path', '.')}
+9. If the service path is not '.', YOU MUST ensure the Dockerfile sets the correct WORKDIR or copies the correct subfolder so that 'npm' or 'pip' commands find the package.json/requirements.txt.
+10. ONLY generate 'COPY' commands for files or directories that you EXPLICITLY see in the file tree. Use 'COPY . .' as a fallback if needed.
+11. Helpful comments throughout"""
 
             content = self._clean(await self._generate(system, user))
             dockerfiles[svc["name"]] = content
@@ -136,16 +144,28 @@ Rules:
 
     # ── 3. Generate docker-compose.yml ────────────────────────────────────────
 
-    async def generate_compose(self, analysis: Dict, stack: Dict, dockerfiles: Dict) -> str:
+    async def generate_compose(
+        self, 
+        analysis: Dict, 
+        stack: Dict, 
+        dockerfiles: Dict,
+        env_vars: Dict[str, str] = None
+    ) -> str:
         system = (
             "You are an expert DevOps engineer. "
             "Output ONLY the raw docker-compose.yml content. "
             "No markdown fences, no explanation."
         )
+        
+        env_text = ""
+        if env_vars:
+            env_text = f"User-provided Environment Variables to INCLUDE:\n{json.dumps(env_vars, indent=2)}\n"
+
         user = f"""Generate a complete docker-compose.yml for this project.
 
 Stack: {json.dumps(stack, indent=2)}
 Dockerfiles generated for services: {list(dockerfiles.keys())}
+{env_text}
 Environment variables needed: {json.dumps(stack.get('environment_variables', []), indent=2)}
 Ports: {json.dumps(stack.get('ports', []), indent=2)}
 Databases: {json.dumps(stack.get('databases', []), indent=2)}
@@ -156,21 +176,22 @@ Repository structure:
 ```
 
 Rules:
-1. Use the modern Docker Compose specification (omit the 'version' attribute)
+1. CRITICAL: Omit the 'version' attribute entirely (modern specification). 
 2. Include all services: app + databases + cache + nginx if needed
 3. Named volumes for persistent data
-4. Health checks for every service
-5. depends_on with condition: service_healthy
+4. Health checks for databases (mongo, postgres, redis, etc.)
+5. CRITICAL: Use the simple array format for 'depends_on'. Example: `depends_on: ["db", "redis"]`. Do NOT use the long form with conditions.
 6. restart: unless-stopped
-7. .env for secrets (use ${{VAR_NAME}})
-8. Helpful comments
-9. CRITICAL: For each app service build section, use EXACTLY this format:
+7. CRITICAL: For app services, add 'env_file: .env' to the service block.
+8. CRITICAL: For EVERY user-provided env var (listed above), you MUST add it to the 'environment' section of the relevant app service using the syntax 'KEY: ${{KEY}}'.
+9. Helpful comments
+10. CRITICAL: For each app service build section, use EXACTLY this format to avoid "pulling from remote" errors:
    build:
      context: .
      dockerfile: Dockerfile.<service_name>
    where <service_name> matches the key in the Dockerfiles list above.
    Example: if service is "app" → dockerfile: Dockerfile.app
-   This is mandatory — do NOT use shorthand `build: .`"""
+   Service names MUST match the keys provided above exactly."""
 
         return self._clean(await self._generate(system, user))
 

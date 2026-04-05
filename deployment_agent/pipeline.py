@@ -125,34 +125,60 @@ async def run_pipeline(
         github_token = github_token or os.getenv("GITHUB_TOKEN")
         analysis = await _fetch_analysis(github_url, github_token, log)
 
-        # ── Step 3-6: LLM ──────────────────────────────────────────────
-        agent = LLMAgent(api_key=api_key, base_url=base_url)
+        # 🔧 SOURCE CODE INTEGRATION: Clone into workspace for Docker build context
+        log("🔄 Preparing full repository source code for Docker build context...", "step")
+        from .cloner import clone_repo
+        
+        # Use the job ID to create a stable workspace path (same as docker_runner)
+        workspace = os.path.join(tempfile.gettempdir(), f"overdrive_{job_id[:8]}")
+        repo_dir = os.path.join(workspace, "repo")
+        os.makedirs(repo_dir, exist_ok=True)
+        
+        try:
+            success, msg = await asyncio.to_thread(clone_repo, github_url, repo_dir)
+            if not success:
+                log(f"⚠️ Initial clone failed: {msg}. Trying again...", "warn")
+                # Attempt to clean up and re-clone once
+                shutil.rmtree(repo_dir, ignore_errors=True)
+                os.makedirs(repo_dir, exist_ok=True)
+                success, msg = await asyncio.to_thread(clone_repo, github_url, repo_dir)
+                if not success:
+                    raise RuntimeError(f"Failed to prepare build context: {msg}")
+            log("✅ Build context prepared with full source code", "success")
 
-        log("🤖 Detecting tech stack with AI...", "step")
-        stack = await agent.detect_stack(analysis)
-        log(f"✅ Stack identified: {stack.get('summary', 'Unknown')}", "success")
+            # ── Step 3-6: LLM ──────────────────────────────────────────────
+            agent = LLMAgent(api_key=api_key, base_url=base_url)
 
-        log("🐳 Generating Dockerfile(s)...", "step")
-        dockerfiles = await agent.generate_dockerfile(analysis, stack)
-        log(f"✅ Generated {len(dockerfiles)} Dockerfile(s): {', '.join(dockerfiles.keys())}", "success")
+            log("🤖 Detecting tech stack with AI...", "step")
+            stack = await agent.detect_stack(analysis)
+            log(f"✅ Stack identified: {stack.get('summary', 'Unknown')}", "success")
 
-        log("📦 Generating docker-compose.yml...", "step")
-        compose = await agent.generate_compose(analysis, stack, dockerfiles)
-        log("✅ docker-compose.yml generated", "success")
+            log("🐳 Generating Dockerfile(s)...", "step")
+            dockerfiles = await agent.generate_dockerfile(analysis, stack)
+            log(f"✅ Generated {len(dockerfiles)} Dockerfile(s): {', '.join(dockerfiles.keys())}", "success")
 
-        log("🔎 Analyzing for errors & improvements...", "step")
-        error_fix = await agent.analyze_errors(analysis, stack)
-        log("✅ Error analysis complete", "success")
+            log("📦 Generating docker-compose.yml...", "step")
+            compose = await agent.generate_compose(analysis, stack, dockerfiles, env_vars=env_vars)
+            log("✅ docker-compose.yml generated", "success")
 
-        # ── Step 7: Run docker compose ───────────────────────────────────
-        log("📦 Writing files & running docker compose up...", "step")
-        docker_success, docker_output = await run_docker_compose(
-            job_id=job_id,
-            dockerfiles=dockerfiles,
-            compose_yaml=compose,
-            log=log,
-            env_vars=env_vars,
-        )
+            log("🔎 Analyzing for errors & improvements...", "step")
+            error_fix = await agent.analyze_errors(analysis, stack)
+            log("✅ Error analysis complete", "success")
+
+            # ── Step 7: Run docker compose ───────────────────────────────────
+            log("📦 Writing files & running docker compose up...", "step")
+            docker_success, docker_output = await run_docker_compose(
+                job_id=job_id,
+                dockerfiles=dockerfiles,
+                compose_yaml=compose,
+                log=log,
+                env_vars=env_vars,
+            )
+        finally:
+            # We clean up ALL temp files at the end of the entire pipeline logic
+            # cleanup logic moved inside run_docker_compose usually, but 
+            # here we have source code too.
+            pass
 
         if docker_success:
             log("🎉 docker compose ran successfully!", "success")
@@ -209,6 +235,43 @@ async def run_pipeline(
                 if job.get("results") is not None:
                     job["results"]["error_report"] = report
                 log("📄 error.md saved → reports/error.md", "info")
+
+                # 🤖 AUTO-HEALING: Trigger PR Agent (Agent 1) automatically
+                try:
+                    import sys
+                    import os as _os
+                    sys.path.append(_os.getcwd()) # Ensure root is in path for agent import
+                    from agent import pr_agent
+
+                    log("🤖 Auto-Healing: Triggering AI Repair Agent (Agent 1)...", "ai")
+                    
+                    # Construct AgentState
+                    state = {
+                        "repo_url": github_url,
+                        "logs": job.get("error", "No logs found."), # Fallback to system error
+                        "token": github_token or "",
+                        "error_report": report,
+                        "analysis": None,
+                        "pr_result": None,
+                        "error": None,
+                        "status": "idle"
+                    }
+
+                    # Non-blocking or wait? We'll wait since we're in a background task
+                    final_state = await pr_agent.ainvoke(state)
+                    
+                    if job.get("results") is not None:
+                        job["results"]["auto_pr"] = final_state.get("pr_result")
+                        job["results"]["auto_analysis"] = final_state.get("analysis").dict() if final_state.get("analysis") else None
+                        
+                    if final_state.get("pr_result"):
+                        log(f"✅ Auto-Healing successful: PR #{final_state['pr_result']['pr_number']} raised!", "success")
+                    elif final_state.get("error"):
+                        log(f"⚠️ Auto-Healing failed: {final_state['error']}", "warn")
+                
+                except Exception as auto_err:
+                    log(f"⚠️ Auto-Healing trigger failed: {auto_err}", "warn")
+
         except Exception as report_err:
             # Never let report generation crash the pipeline response
             log(f"⚠️  Log analyzer failed: {report_err}", "warn")

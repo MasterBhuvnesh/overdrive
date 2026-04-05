@@ -21,6 +21,12 @@ interface PRResult {
   branch_name: string;
 }
 
+interface EnvRow {
+  id: string;
+  key: string;
+  value: string;
+}
+
 /* ─── Helpers ─────────────────────────────────────────────── */
 let _logId = 0;
 function makeLog(level: LogLevel, message: string, indent = 0): LogLine {
@@ -70,6 +76,11 @@ export default function HealPage() {
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
   
+  // Env state
+  const [envRows, setEnvRows] = useState<EnvRow[]>([]);
+  const [showEnvBulk, setShowEnvBulk] = useState(false);
+  const [bulkEnvText, setBulkEnvText] = useState("");
+  
   const consoleRef = useRef<HTMLDivElement>(null);
 
   // Auth guard
@@ -116,6 +127,36 @@ export default function HealPage() {
     setLogs((prev) => [...prev, makeLog(level, msg, indent)]);
   };
 
+  const addEnvRow = () => {
+    setEnvRows([...envRows, { id: Math.random().toString(36).substr(2, 9), key: "", value: "" }]);
+  };
+
+  const removeEnvRow = (id: string) => {
+    setEnvRows(envRows.filter(r => r.id !== id));
+  };
+
+  const updateEnvRow = (id: string, field: "key" | "value", val: string) => {
+    setEnvRows(envRows.map(r => r.id === id ? { ...r, [field]: val } : r));
+  };
+
+  const parseEnvText = () => {
+    const lines = bulkEnvText.split("\n");
+    const newRows: EnvRow[] = [];
+    lines.forEach(line => {
+      const parts = line.split("=");
+      if (parts.length >= 2) {
+        newRows.push({
+          id: Math.random().toString(36).substr(2, 9),
+          key: parts[0].trim(),
+          value: parts.slice(1).join("=").trim()
+        });
+      }
+    });
+    setEnvRows([...envRows, ...newRows]);
+    setBulkEnvText("");
+    setShowEnvBulk(false);
+  };
+
   async function pollDeployment(jobId: string) {
     try {
       const res = await fetch(`/api/deploy/status/${jobId}`);
@@ -144,6 +185,13 @@ export default function HealPage() {
           } else {
             pushLog("warn", "No detailed report generated. Repair will use standard logs.", 1);
           }
+
+          // ── Check for Auto-Heal PR result ─────────────────────────
+          if (job.results?.auto_pr) {
+            setLastPR(job.results.auto_pr);
+            setAnalysis(job.results.auto_analysis);
+            pushLog("success", "Auto-Heal: AI has already analyzed the error and raised a PR!", 1);
+          }
         } else {
           pushLog("success", "Deployment successful! No errors found.", 1);
         }
@@ -170,10 +218,16 @@ export default function HealPage() {
     pushLog("info", "Task: Generate Dockerfile, Compose, and Run...", 1);
 
     try {
+      const vars: Record<string, string> = {};
+      envRows.forEach(r => { if (r.key.trim()) vars[r.key.trim()] = r.value; });
+
       const res = await fetch("/api/deploy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repoUrl }),
+        body: JSON.stringify({ 
+          repoUrl,
+          envVars: Object.keys(vars).length > 0 ? vars : undefined
+        }),
       });
 
       const data = await res.json();
@@ -313,6 +367,65 @@ export default function HealPage() {
               <p style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.6)", lineHeight: 1.4 }}>A build error was captured. Click <b>Launch Repair</b> to fix.</p>
             </div>
           )}
+
+          {/* 🧩 Environment Variables Section */}
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "24px", marginTop: "24px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <span style={{ fontSize: "0.85rem", opacity: 0.7, fontWeight: 600 }}>Environmental Variables</span>
+              <button 
+                onClick={() => setShowEnvBulk(!showEnvBulk)}
+                style={{ fontSize: "0.75rem", background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.2)", color: "#a78bfa", padding: "4px 8px", borderRadius: "6px", cursor: "pointer" }}
+              >
+                Bulk Import
+              </button>
+            </div>
+
+            {showEnvBulk && (
+              <div style={{ marginBottom: "16px" }}>
+                <textarea 
+                  className="auth-input"
+                  style={{ width: "100%", minHeight: "100px", fontSize: "0.8rem", marginBottom: "8px" }}
+                  placeholder="KEY=VALUE&#10;PORT=3000"
+                  value={bulkEnvText}
+                  onChange={(e) => setBulkEnvText(e.target.value)}
+                />
+                <button className="btn-secondary" style={{ width: "100%", padding: "8px" }} onClick={parseEnvText}>Parse .env</button>
+              </div>
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              {envRows.map((row) => (
+                <div key={row.id} style={{ display: "flex", gap: "8px" }}>
+                  <input 
+                    placeholder="KEY" 
+                    className="auth-input" 
+                    style={{ flex: 1, padding: "8px", fontSize: "0.8rem" }}
+                    value={row.key}
+                    onChange={(e) => updateEnvRow(row.id, "key", e.target.value)}
+                  />
+                  <input 
+                    placeholder="VALUE" 
+                    className="auth-input" 
+                    style={{ flex: 1, padding: "8px", fontSize: "0.8rem" }}
+                    value={row.value}
+                    onChange={(e) => updateEnvRow(row.id, "value", e.target.value)}
+                  />
+                  <button 
+                    onClick={() => removeEnvRow(row.id)}
+                    style={{ padding: "8px", background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: "6px", color: "#f87171" }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              <button 
+                onClick={addEnvRow}
+                style={{ width: "100%", padding: "10px", background: "rgba(255,255,255,0.03)", border: "1px dashed var(--border)", borderRadius: "10px", color: "white", fontSize: "0.8rem", opacity: 0.6, cursor: "pointer" }}
+              >
+                + Add Variable
+              </button>
+            </div>
+          </div>
 
           {lastPR && (
             <div style={{ marginTop: "24px", padding: "20px", background: "rgba(52,211,153,0.1)", borderRadius: "16px", border: "1px solid rgba(52,211,153,0.2)" }}>

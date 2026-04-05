@@ -49,14 +49,12 @@ def _patch_compose_dockerfile_refs(
         named = f"Dockerfile.{svc}"
 
         # 1. Shorthand: "    build: ."  → expand
+        # This regex looks for 'build: .' possibly followed by comments or trailing whitespace
         compose_yaml = re.sub(
-            rf"([ \t]+)(build:\s*\.\s*\n)",
-            # only when it's under the right service — capture the service block
-            # Use a simpler approach: just replace all `build: .` in the YAML
-            # (safe because compose was generated specifically for these services)
+            rf"([ \t]+)(build:\s*\.[^\n]*(\n|$))",
             rf"\1build:\n\1  context: .\n\1  dockerfile: {named}\n",
             compose_yaml,
-            count=1,  # one per service pass
+            count=1,
         )
 
     return compose_yaml
@@ -92,17 +90,25 @@ async def run_docker_compose(
     env_vars (Optional): Dictionary of KV pairs to write to a .env file.
     """
     workspace = _workspace_dir(job_id)
-    os.makedirs(workspace, exist_ok=True)
+    repo_dir = os.path.join(workspace, "repo")
+    os.makedirs(repo_dir, exist_ok=True)
     output_lines: List[str] = []
 
     try:
+        # ── Step 0: Ghost Build Check ─────────────────────────────────────
+        # Ensure the repo_dir actually contains source code before we add our files.
+        existing_items = [f for f in os.listdir(repo_dir) if not f.startswith(".")]
+        if not existing_items:
+            msg = "❌ GHOST BUILD: Build context is empty. Source code hydration failed."
+            log(msg, "error")
+            output_lines.append(msg)
+            return False, output_lines
+
         # ── Step A: Write Dockerfiles ─────────────────────────────────────
         for svc_name, content in dockerfiles.items():
-            # Single service → plain "Dockerfile"; multiple → "Dockerfile.<svc>"
-            filename = (
-                f"Dockerfile.{svc_name}" if len(dockerfiles) > 1 else "Dockerfile"
-            )
-            path = os.path.join(workspace, filename)
+            # Standardized naming logic (always include service suffix)
+            filename = f"Dockerfile.{svc_name}"
+            path = os.path.join(repo_dir, filename)
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(content)
             log(f"📝 Written {filename} to workspace", "info")
@@ -115,18 +121,25 @@ async def run_docker_compose(
 
         # ── Step B.5: Write .env file if env_vars provided ──────────────
         if env_vars:
-            dot_env_path = os.path.join(workspace, ".env")
+            dot_env_path = os.path.join(repo_dir, ".env")
             with open(dot_env_path, "w", encoding="utf-8") as fh:
                 for k, v in env_vars.items():
                     fh.write(f"{k}={v}\n")
+                    log(f"🔑 Env Variable added: {k}", "info")
             log(f"📝 Written .env with {len(env_vars)} variables", "info")
 
         # ── Step C: Write docker-compose.yml ─────────────────────────────
-        compose_path = os.path.join(workspace, "docker-compose.yml")
+        compose_path = os.path.join(repo_dir, "docker-compose.yml")
         with open(compose_path, "w", encoding="utf-8") as fh:
             fh.write(compose_yaml)
         log("📝 Written docker-compose.yml to workspace", "info")
-        log(f"📂 Workspace: {workspace}", "info")
+        
+        # 🧪 Debug: Show the final YAML configuration
+        log("🔎 FINAL DOCKER COMPOSE CONFIGURATION:", "data")
+        for line in compose_yaml.splitlines():
+            log(f"   {line}", "data")
+            
+        log(f"📂 Workspace: {repo_dir}", "info")
 
         # ── Step D: Launch subprocess ─────────────────────────────────────
         log(
@@ -145,7 +158,7 @@ async def run_docker_compose(
                 "--build",
                 "--abort-on-container-exit",
                 "--no-color",
-                cwd=workspace,
+                cwd=repo_dir,
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,  # merge stderr → stdout stream
